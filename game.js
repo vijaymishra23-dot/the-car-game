@@ -3,6 +3,193 @@ const ctx = canvas.getContext('2d');
 canvas.width = 420;
 canvas.height = 680;
 
+// ── Audio ─────────────────────────────────────────────────────────
+
+let audioCtx = null;
+let masterGain = null;
+let engineOsc1 = null;
+let engineOsc2 = null;
+let engineGainNode = null;
+let musicBar = 0;
+let nextBarTime = 0;
+let musicScheduler = null;
+
+const BPM = 128;
+const BEAT = 60 / BPM;
+const BAR  = BEAT * 4;
+
+// Note frequencies
+const NOTE = {
+  E2: 82.41, F2: 87.31, G2: 98.00, A2: 110.00, B2: 123.47,
+  C3: 130.81, D3: 146.83, E3: 164.81, G3: 196.00, A3: 220.00,
+  C4: 261.63, D4: 293.66, E4: 329.63, G4: 392.00, A4: 440.00,
+  B4: 493.88, C5: 523.25, D5: 587.33, E5: 659.25, G5: 783.99
+};
+
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.55;
+  masterGain.connect(audioCtx.destination);
+  buildEngine();
+  nextBarTime = audioCtx.currentTime + 0.05;
+  scheduleMusic();
+}
+
+// ── Engine sound ──────────────────────────────────────────────────
+
+function buildEngine() {
+  // Distortion waveshaper for gritty engine texture
+  const dist = audioCtx.createWaveShaper();
+  const n = 512;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / n - 1;
+    curve[i] = (Math.PI + 120) * x / (Math.PI + 120 * Math.abs(x));
+  }
+  dist.curve = curve;
+
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = 600;
+
+  engineGainNode = audioCtx.createGain();
+  engineGainNode.gain.value = 0;
+
+  engineOsc1 = audioCtx.createOscillator();
+  engineOsc2 = audioCtx.createOscillator();
+  engineOsc1.type = 'sawtooth';
+  engineOsc2.type = 'square';
+  engineOsc1.frequency.value = 80;
+  engineOsc2.frequency.value = 40;
+
+  engineOsc1.connect(dist);
+  engineOsc2.connect(dist);
+  dist.connect(filt);
+  filt.connect(engineGainNode);
+  engineGainNode.connect(masterGain);
+  engineOsc1.start();
+  engineOsc2.start();
+}
+
+function updateEngineSound(speed, accelerating) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const freq = 55 + speed * 20;
+  engineOsc1.frequency.linearRampToValueAtTime(freq,     t + 0.08);
+  engineOsc2.frequency.linearRampToValueAtTime(freq / 2, t + 0.08);
+  const vol = accelerating ? 0.35 : 0.06;
+  engineGainNode.gain.linearRampToValueAtTime(vol, t + 0.1);
+}
+
+// ── Background music ──────────────────────────────────────────────
+
+function tone(freq, start, dur, type = 'square', vol = 0.14) {
+  const osc  = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(vol, start);
+  gain.gain.setValueAtTime(vol, start + dur * 0.8);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(start);
+  osc.stop(start + dur);
+}
+
+function kick(t) {
+  const osc  = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(180, t);
+  osc.frequency.exponentialRampToValueAtTime(0.01, t + 0.4);
+  gain.gain.setValueAtTime(0.9, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+  osc.connect(gain); gain.connect(masterGain);
+  osc.start(t); osc.stop(t + 0.4);
+}
+
+function snare(t) {
+  const buf  = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.12, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  const src  = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = 'highpass'; filt.frequency.value = 1200;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0.38, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+  src.connect(filt); filt.connect(gain); gain.connect(masterGain);
+  src.start(t);
+}
+
+function hihat(t, vol = 0.09) {
+  const buf  = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.04, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  const src  = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = 'highpass'; filt.frequency.value = 8000;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+  src.connect(filt); filt.connect(gain); gain.connect(masterGain);
+  src.start(t);
+}
+
+// 4-bar looping track: Am → F → C → G feel
+const TRACK = [
+  // bar 0 — Am
+  { bass: [[NOTE.A2,0],[NOTE.A2,1],[NOTE.A2,2],[NOTE.A2,3]],
+    mel:  [[NOTE.A4,0,0.5],[NOTE.C5,0.5,0.5],[NOTE.E5,1,1],[NOTE.D5,2,0.5],[NOTE.C5,2.5,0.5],[NOTE.A4,3,1]] },
+  // bar 1 — F
+  { bass: [[NOTE.F2,0],[NOTE.F2,1],[NOTE.G2,2],[NOTE.G2,3]],
+    mel:  [[NOTE.C5,0,0.5],[NOTE.D5,0.5,0.5],[NOTE.E5,1,1],[NOTE.D5,2,0.5],[NOTE.C5,2.5,0.5],[NOTE.B4,3,1]] },
+  // bar 2 — C
+  { bass: [[NOTE.C3,0],[NOTE.C3,1],[NOTE.E2,2],[NOTE.E2,3]],
+    mel:  [[NOTE.G4,0,0.5],[NOTE.A4,0.5,0.5],[NOTE.C5,1,1],[NOTE.B4,2,0.5],[NOTE.A4,2.5,0.5],[NOTE.G4,3,1]] },
+  // bar 3 — G (builds back to Am)
+  { bass: [[NOTE.G2,0],[NOTE.G2,1],[NOTE.A2,2],[NOTE.A2,3]],
+    mel:  [[NOTE.D5,0,0.5],[NOTE.E5,0.5,0.5],[NOTE.G5,1,1],[NOTE.E5,2,0.5],[NOTE.D5,2.5,0.5],[NOTE.E5,3,1]] },
+];
+
+function scheduleBar() {
+  const bar  = TRACK[musicBar % TRACK.length];
+  const t0   = nextBarTime;
+
+  // Drums
+  kick(t0);               kick(t0 + BEAT * 2);
+  snare(t0 + BEAT);       snare(t0 + BEAT * 3);
+  for (let i = 0; i < 8; i++) hihat(t0 + i * BEAT * 0.5);
+
+  // Bass (sawtooth)
+  bar.bass.forEach(([freq, beat]) =>
+    tone(freq, t0 + beat * BEAT, BEAT * 0.85, 'sawtooth', 0.22));
+
+  // Melody (square — chiptune feel)
+  bar.mel.forEach(([freq, beat, dur]) =>
+    tone(freq, t0 + beat * BEAT, dur * BEAT * 0.88, 'square', 0.11));
+
+  nextBarTime += BAR;
+  musicBar++;
+}
+
+function scheduleMusic() {
+  if (!audioCtx) return;
+  // Keep ~2 bars ahead so there are no gaps
+  while (nextBarTime < audioCtx.currentTime + BAR * 2) scheduleBar();
+  musicScheduler = setTimeout(scheduleMusic, (BAR * 1000) / 2);
+}
+
+function stopMusic() {
+  clearTimeout(musicScheduler);
+  musicScheduler = null;
+}
+
 // Road bounds
 const ROAD_LEFT = 60;
 const ROAD_RIGHT = 360;
@@ -36,6 +223,7 @@ const keys = {};
 document.addEventListener('keydown', e => {
   keys[e.key] = true;
   e.preventDefault();
+  initAudio(); // browsers require a user gesture to start audio
 });
 document.addEventListener('keyup', e => { keys[e.key] = false; });
 
@@ -365,6 +553,10 @@ function resetGame() {
   spawnTimer = 0;
   spawnInterval = 85;
   frameCount = 0;
+  // Restart music
+  nextBarTime = audioCtx ? audioCtx.currentTime + 0.05 : 0;
+  musicBar = 0;
+  scheduleMusic();
   state = 'playing';
 }
 
@@ -390,9 +582,11 @@ function update() {
   frameCount++;
 
   // Speed: up arrow accelerates, otherwise cruise
-  const targetSpeed = keys['ArrowUp'] ? 11 : 3.5;
+  const accelerating = !!keys['ArrowUp'];
+  const targetSpeed = accelerating ? 11 : 3.5;
   gameSpeed += (targetSpeed - gameSpeed) * 0.04;
   kmh = Math.round(50 + gameSpeed * 22);
+  updateEngineSound(gameSpeed, accelerating);
 
   // Lateral movement
   const lateralSpeed = 5 + gameSpeed * 0.3;
@@ -420,6 +614,8 @@ function update() {
     if (hits(player, o)) {
       spawnCrashParticles(player.x, player.y);
       hiScore = Math.max(hiScore, score);
+      updateEngineSound(0, false);
+      stopMusic();
       state = 'dead';
       return;
     }
