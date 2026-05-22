@@ -220,11 +220,18 @@ let frameCount = 0;
 let particles = [];
 
 const keys = {};
+function unlockAudio() {
+  initAudio();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
 document.addEventListener('keydown', e => {
   keys[e.key] = true;
   e.preventDefault();
-  initAudio(); // browsers require a user gesture to start audio
+  unlockAudio();
 });
+
+canvas.addEventListener('click', () => unlockAudio());
 document.addEventListener('keyup', e => { keys[e.key] = false; });
 
 // ── Drawing helpers ───────────────────────────────────────────────
@@ -449,6 +456,14 @@ function drawTitleScreen() {
     ctx.font = 'bold 17px sans-serif';
     ctx.fillText('Press ↑ to Start', canvas.width / 2, canvas.height / 2 + 105);
   }
+
+  // Sound enable hint
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  roundRect(canvas.width / 2 - 110, canvas.height - 52, 220, 36, 8);
+  ctx.fill();
+  ctx.fillStyle = '#f4a261';
+  ctx.font = '13px sans-serif';
+  ctx.fillText('🔊 Click the game to enable sound', canvas.width / 2, canvas.height - 28);
 }
 
 function drawDeadScreen() {
